@@ -1,0 +1,125 @@
+---
+title: "PROJECT"
+author: "Adam Sperber"
+date: "4/27/2021"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r}
+setwd('C:/Users/merv1/Desktop/Homework/410')
+CSV <- read.csv('Traffic_Crashes_-_Crashes.csv')
+library(tidyverse)
+library(VGAM)
+library(MASS)
+library(brant)
+library(lubridate)
+```
+
+Packages as needed
+
+Variable setup:
+
+```{r}
+crash <- data.frame(CSV)
+
+crash$YEAR <- year(as.Date(crash$CRASH_DATE, format = "%m/%d/%Y %H:%M"))
+# Creates year variable
+# I ultimately didn't use it for anything
+# It was a backup in case the file proved too large for my laptop to process
+
+crash <- subset(crash, select = c(YEAR, DAMAGE, ROADWAY_SURFACE_COND, WEATHER_CONDITION,BEAT_OF_OCCURRENCE, ROAD_DEFECT, POSTED_SPEED_LIMIT))
+
+unique(crash$ROADWAY_SURFACE_COND)
+crash$ROADWAY_SURFACE_COND <- ifelse(crash$ROADWAY_SURFACE_COND %in%
+  c("WET", "SNOW OR SLUSH", "ICE", "OTHER", "SAND, MUD, DIRT"), "1", "0")
+crash$ROADWAY_SURFACE_COND <- as.integer(crash$ROADWAY_SURFACE_COND)
+# Creates dummy variable for good vs bad road conditions at my own discretion
+
+unique(crash$WEATHER_CONDITION)
+crash$WEATHER_CONDITION <- ifelse(crash$WEATHER_CONDITION %in% 
+  c("SNOW", "RAIN", "SLEET/HAIL", "FREEZING RAIN/DRIZZLE", "BLOWING SNOW", "BLOWING SAND, SOIL, DIRT", "FOG/SMOKE/HAZE" ), "1", "0")
+crash$WEATHER_CONDITION <- as.integer(crash$WEATHER_CONDITION)
+
+unique(crash$ROAD_DEFECT)
+crash$ROAD_DEFECT <- ifelse(crash$ROAD_DEFECT %in% c("RUT, HOLES", "SHOULDER DEFECT", "DEBRIS ON ROADWAY", "WORN SURFACE"), "1", "0")
+crash$ROAD_DEFECT <- as.integer(crash$ROAD_DEFECT)
+# Dummy variable for road defects already effectively in place
+```
+
+This might be bad logic, but as I can't bring myself to actually delete any data, I grouped UNKNOWN in with all neutral conditions under the assumption that such conditions would have been noted if they were relevant to the crash. It would have been at least 15% of the file gone had I omitted it.
+
+The police beat variable is a 4-digit system, but the CSV only records three if the first digit is a zero. Additionally, I want information per beat district, not reducing to individual beats. This is how I amended it:
+
+```{r}
+crash$BEAT_OF_OCCURRENCE[nchar(crash$BEAT_OF_OCCURRENCE) == 3] <-
+  paste0('00', crash$BEAT_OF_OCCURRENCE[nchar(crash$BEAT_OF_OCCURRENCE) == 3])
+# Adds 00 as the first two digits if the variable is only 3 digits long
+
+crash$BEAT_OF_OCCURRENCE[nchar(crash$BEAT_OF_OCCURRENCE) == 4] <-
+  paste0('0', crash$BEAT_OF_OCCURRENCE[nchar(crash$BEAT_OF_OCCURRENCE) == 4])
+# Adds 0 as the first digit if the variable is 4 digits long
+
+crash$DISTRICT <- substr(crash$BEAT_OF_OCCURRENCE, 1, 3)
+
+north <- c('016','024','017','020','019','025','014','015','011')
+central <- c('018','013','001','012','010','009','008','002','003')
+south <- c('007','006','022','005','004')           
+# Creates district variable corresponding to CPD categories
+
+crash$AREA <- ifelse(crash$DISTRICT %in% north, "NORTH",
+                   ifelse(crash$DISTRICT %in% south, "SOUTH", "CENTRAL"))
+# Creates variables for the three established district areas
+```
+
+Variable setup at this point is complete
+
+```{r}
+(area <- table(crash$AREA, crash$DAMAGE))
+
+prop.table(area, 1)
+prop.table(area, 2)
+```
+
+Note how the greatest proportion of expensive accidents per area is in the South. (table 2)
+
+The proportion of overall crashes in the Central Area cements it as the baseline for the PO model. (table 3)
+
+
+
+```{r}
+fit <- vglm(DAMAGE ~ AREA + ROADWAY_SURFACE_COND + ROAD_DEFECT+ WEATHER_CONDITION + POSTED_SPEED_LIMIT, family = cumulative(parallel = T), data = crash)
+
+summary(fit)
+```
+
+Weather condition is surprisingly irrelevant? Let's check it!
+
+```{r}
+fit <- vglm(formula = DAMAGE ~ AREA + ROADWAY_SURFACE_COND + ROAD_DEFECT + POSTED_SPEED_LIMIT, family = cumulative(parallel = T), data = crash)
+
+summary(fit)
+```
+
+No negative changes--if anything, surface condition became more pronounced yet with a lower standard error? I must be dreaming!
+
+```{r}
+fit_polr <- (polr(as.factor(DAMAGE) ~ AREA + ROADWAY_SURFACE_COND + ROAD_DEFECT+ POSTED_SPEED_LIMIT, data = crash))
+
+# polr function fits a logistic or probit regression to the data; the brant package verifies the proportionality assumption.
+
+summary(fit_polr)
+
+brant(fit_polr)
+```
+
+The polr model is identical; brant confirms the PO model.
+
+```{r}
+confintvglm(fit)
+
+fit0 <- vglm(DAMAGE ~ 1, family = cumulative(parallel = T), data = crash)
+lrtest(fit, fit0)
+# Reject H0
+```
